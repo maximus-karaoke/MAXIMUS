@@ -1,0 +1,65 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function admin() { return signedIn() && request.auth.uid == 'o5yKFwWsUebcWGlPqGRcV9obAnX2'; }
+    function ownApplicationId(appId) {
+      return signedIn() && appId.matches('^' + request.auth.uid + '_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]+$');
+    }
+    function applicationPath(day, round) {
+      return /databases/$(database)/documents/maximusApplications/$(request.auth.uid + '_' + day + '_' + string(round));
+    }
+    function arrived(day, round) {
+      return signedIn() && exists(applicationPath(day, round)) &&
+        get(applicationPath(day, round)).data.approved == true &&
+        get(applicationPath(day, round)).data.arrived == true;
+    }
+    function eventOpen(day, round) {
+      return !exists(/databases/$(database)/documents/maximusEvents/$(day + '_' + string(round))) ||
+        get(/databases/$(database)/documents/maximusEvents/$(day + '_' + string(round))).data.open == true;
+    }
+    match /maximusControl/{controlId} {
+      allow get: if signedIn() && controlId == 'current';
+      allow list: if admin();
+      allow write: if admin();
+    }
+    match /maximusEvents/{scope} {
+      allow read: if signedIn();
+      allow write: if admin();
+    }
+    match /maximusApplications/{appId} {
+      // The ID is deterministic: UID_date_round. Allow get of a missing own document.
+      // Queries/listing all applications remain admin-only.
+      allow get: if admin() || ownApplicationId(appId);
+      allow list: if admin();
+      allow create: if signedIn() && !admin() && ownApplicationId(appId) &&
+        request.resource.data.ownerUid == request.auth.uid &&
+        appId == request.auth.uid + '_' + request.resource.data.eventDate + '_' + string(request.resource.data.round) &&
+        request.resource.data.approved == false &&
+        request.resource.data.arrived == false &&
+        request.resource.data.seat == null &&
+        request.resource.data.requestedSeat == null &&
+        eventOpen(request.resource.data.eventDate, request.resource.data.round);
+      allow update, delete: if admin();
+    }
+    match /maximusSeatRounds/{scope}/seats/{seatId} {
+      allow read: if admin() || (signedIn() &&
+        scope == resource.data.eventDate + '_' + string(resource.data.round) &&
+        arrived(resource.data.eventDate, resource.data.round) &&
+        eventOpen(resource.data.eventDate, resource.data.round));
+      allow write: if admin();
+    }
+    match /maximusSeatRounds/{scope}/requests/{uid} {
+      allow get: if admin() || (signedIn() && request.auth.uid == uid);
+      allow list: if admin();
+      allow create: if signedIn() && !admin() && request.auth.uid == uid &&
+        request.resource.data.ownerUid == uid &&
+        request.resource.data.appId == uid + '_' + request.resource.data.eventDate + '_' + string(request.resource.data.round) &&
+        scope == request.resource.data.eventDate + '_' + string(request.resource.data.round) &&
+        request.resource.data.status == 'pending' &&
+        eventOpen(request.resource.data.eventDate, request.resource.data.round) &&
+        arrived(request.resource.data.eventDate, request.resource.data.round);
+      allow update, delete: if admin();
+    }
+  }
+}
